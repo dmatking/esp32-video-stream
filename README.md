@@ -26,7 +26,15 @@ The `--quality` flag maps to ffmpeg's `-q:v` (2-31, lower is better). The video 
 
 ### Firmware
 
-Requires ESP-IDF v5.5+. WiFi credentials are loaded from `~/.esp_creds` via `SDKCONFIG_DEFAULTS` so they are never committed.
+Requires ESP-IDF v5.5+. WiFi credentials are loaded from `~/.esp_creds` via `SDKCONFIG_DEFAULTS` so they are never committed. Create the file with your network details:
+
+```
+# ~/.esp_creds
+CONFIG_WIFI_SSID="YourNetworkName"
+CONFIG_WIFI_PASS="YourPassword"
+```
+
+Then build and flash:
 
 ```
 idf.py set-target esp32s3
