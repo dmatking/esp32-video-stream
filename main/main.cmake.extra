@@ -1,0 +1,1 @@
+list(APPEND EXTRA_REQUIRES esp_lcd esp_wifi esp_netif esp_event nvs_flash lwip esp_timer)

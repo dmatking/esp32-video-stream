@@ -1,0 +1,23 @@
+# ESP-IDF build outputs
+build/
+sdkconfig
+sdkconfig.old
+dependencies.lock
+
+# IDF managed components cache
+managed_components/
+
+# Video files
+*.mp4
+*.mkv
+*.avi
+*.webm
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# IDE
+.vscode/
+.idea/

@@ -1,0 +1,19 @@
+menu "Video Stream"
+
+    config WIFI_SSID
+        string "WiFi SSID"
+        default "myssid"
+
+    config WIFI_PASS
+        string "WiFi Password"
+        default "mypassword"
+
+    config STREAM_SERVER_IP
+        string "Stream server IP address"
+        default "192.168.68.65"
+
+    config STREAM_SERVER_PORT
+        int "Stream server TCP port"
+        default 5000
+
+endmenu
