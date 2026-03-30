@@ -1,6 +1,8 @@
-# video-stream
+# esp32-video-stream
 
 MJPEG-over-TCP video stream receiver for ESP32-S3. A Python server transcodes any video file to MJPEG using ffmpeg and sends frames over TCP. The ESP32 firmware decodes each frame with the tjpgd ROM decoder and pushes it to the display at ~12 fps.
+
+<video src="demo.mp4" autoplay loop muted playsinline width="640"></video>
 
 ## Hardware
 

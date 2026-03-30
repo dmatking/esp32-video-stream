@@ -7,8 +7,9 @@ dependencies.lock
 # IDF managed components cache
 managed_components/
 
-# Video files
+# Video files (except demo clip)
 *.mp4
+!demo.mp4
 *.mkv
 *.avi
 *.webm
