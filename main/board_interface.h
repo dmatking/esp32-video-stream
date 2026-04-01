@@ -48,5 +48,13 @@ uint16_t board_lcd_get_pixel_raw(int x, int y);
 void board_lcd_unpack_rgb(uint16_t color, uint8_t *r, uint8_t *g, uint8_t *b);
 
 // Return a pointer to the raw framebuffer for bulk writes.
-// Returns NULL if no framebuffer is allocated.
+// Returns NULL if no framebuffer is allocated (or if display is RGB888).
 uint16_t *board_lcd_framebuffer(void);
+
+// Return a pointer to the RGB888 framebuffer (P4 MIPI-DSI boards).
+// Returns NULL on boards that use RGB565.
+uint8_t *board_lcd_framebuffer_rgb888(void);
+
+// Return the framebuffer height (may be larger than board_lcd_height()
+// due to alignment requirements, e.g. JPEG decoder 16-pixel alignment).
+int board_lcd_fb_height(void);

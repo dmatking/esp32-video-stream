@@ -25,3 +25,5 @@ nohup.out
 # IDE
 .vscode/
 .idea/
+.claude
+claude-start.sh

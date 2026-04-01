@@ -3,11 +3,11 @@
 Broadcast video files as MJPEG over TCP to one or more ESP32 displays.
 
 Usage:
-    python stream_video.py [video_dir] [--port 5000] [--width 320] [--height 240] [--fps 15] [--quality 80]
+    python stream_video.py [video_dir] [--port 5000] [--width 320] [--height 240] [--fps 30] [--compression 10]
 
-Plays all video files found in the given directory (default: ./videos),
-cycling through them in alphabetical order and looping forever.
-All connected clients receive the same frames simultaneously.
+Videos in the directory are pre-encoded to MJPEG AVI at the target resolution
+on first run (cached in a .cache/ subfolder), then frames are read and sent
+with no real-time transcoding overhead.
 
 Each frame is sent as: 4-byte little-endian length + JPEG data.
 
@@ -28,23 +28,45 @@ VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".mov", ".webm", ".flv", ".wmv", ".m4v"}
 
 def find_videos(directory):
     """Return sorted list of video files in directory."""
-    videos = sorted(
+    return sorted(
         p for p in pathlib.Path(directory).iterdir()
         if p.is_file() and p.suffix.lower() in VIDEO_EXTS
     )
-    return videos
 
 
-def mjpeg_frames(path, width, height, fps, quality):
-    """Yield individual JPEG frames from a video file using ffmpeg."""
+def pre_encode(src, cache_dir, width, height, fps, quality):
+    """Pre-encode a video to MJPEG AVI at target resolution. Returns path."""
+    cache_dir.mkdir(exist_ok=True)
+    tag = f"{width}x{height}_q{quality}_f{fps}"
+    out = cache_dir / f"{src.stem}_{tag}.avi"
+
+    if out.exists() and out.stat().st_mtime >= src.stat().st_mtime:
+        return out
+
+    print(f"  Encoding {src.name} → {out.name} ...")
     cmd = [
-        "ffmpeg",
-        "-i", str(path),
+        "ffmpeg", "-y",
+        "-i", str(src),
         "-vf", f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
                f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2",
         "-r", str(fps),
         "-q:v", str(quality),
-        "-f", "mjpeg",
+        "-c:v", "mjpeg",
+        "-an",
+        "-v", "warning",
+        str(out),
+    ]
+    subprocess.run(cmd, check=True)
+    return out
+
+
+def mjpeg_frames(path):
+    """Yield individual JPEG frames from a pre-encoded MJPEG AVI file."""
+    cmd = [
+        "ffmpeg",
+        "-i", str(path),
+        "-c:v", "copy",
+        "-f", "image2pipe",
         "-v", "warning",
         "pipe:1",
     ]
@@ -52,25 +74,29 @@ def mjpeg_frames(path, width, height, fps, quality):
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
     try:
-        buf = b""
+        buf = bytearray()
         while True:
-            chunk = proc.stdout.read(4096)
+            chunk = proc.stdout.read(131072)
             if not chunk:
+                # Flush remaining frame
+                if buf:
+                    soi = buf.find(b"\xff\xd8")
+                    eoi = buf.find(b"\xff\xd9", soi + 2) if soi >= 0 else -1
+                    if soi >= 0 and eoi >= 0:
+                        yield bytes(buf[soi:eoi + 2])
                 return
-            buf += chunk
+            buf.extend(chunk)
 
-            # MJPEG frames are delimited by SOI (FFD8) and EOI (FFD9) markers
             while True:
                 soi = buf.find(b"\xff\xd8")
                 if soi < 0:
-                    buf = buf[-1:]  # keep last byte in case of split marker
+                    del buf[:max(len(buf) - 1, 0)]
                     break
                 eoi = buf.find(b"\xff\xd9", soi + 2)
                 if eoi < 0:
-                    break  # need more data
-                frame = buf[soi:eoi + 2]
-                buf = buf[eoi + 2:]
-                yield frame
+                    break
+                yield bytes(buf[soi:eoi + 2])
+                del buf[:eoi + 2]
     finally:
         proc.terminate()
         proc.wait()
@@ -83,12 +109,13 @@ def main():
     parser.add_argument("--port", type=int, default=5000, help="TCP port (default: 5000)")
     parser.add_argument("--width", type=int, default=320, help="Display width (default: 320)")
     parser.add_argument("--height", type=int, default=240, help="Display height (default: 240)")
-    parser.add_argument("--fps", type=int, default=20, help="Target FPS (default: 20)")
-    parser.add_argument("--quality", type=int, default=10,
-                        help="JPEG quality 2-31, lower=better (default: 10)")
+    parser.add_argument("--fps", type=int, default=30, help="Target FPS (default: 30)")
+    parser.add_argument("--compression", type=int, default=10,
+                        help="JPEG compression level 2-31, lower=better quality (default: 10)")
     args = parser.parse_args()
 
-    videos = find_videos(args.video_dir)
+    video_dir = pathlib.Path(args.video_dir)
+    videos = find_videos(video_dir)
     if not videos:
         print(f"No video files found in {args.video_dir}/")
         sys.exit(1)
@@ -96,6 +123,15 @@ def main():
     print(f"Found {len(videos)} video(s) in {args.video_dir}/:")
     for v in videos:
         print(f"  {v.name}")
+
+    # Pre-encode all videos
+    cache_dir = video_dir / ".cache"
+    print(f"\nPre-encoding to {args.width}x{args.height} @ {args.fps}fps, q={args.compression}...")
+    encoded = []
+    for v in videos:
+        enc = pre_encode(v, cache_dir, args.width, args.height, args.fps, args.compression)
+        encoded.append(enc)
+    print("Pre-encoding done.\n")
 
     # Thread-safe set of connected clients
     clients = {}  # conn -> addr
@@ -110,7 +146,7 @@ def main():
         while True:
             conn, addr = srv.accept()
             conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-            conn.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 64 * 1024)
+            conn.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 128 * 1024)
             conn.settimeout(2.0)
             with clients_lock:
                 clients[conn] = addr
@@ -119,22 +155,31 @@ def main():
     acceptor = threading.Thread(target=accept_loop, daemon=True)
     acceptor.start()
 
-    print(f"\nListening on port {args.port}, waiting for ESP32(s)...")
-    print(f"Settings: {args.width}x{args.height} @ {args.fps}fps, quality={args.quality}")
+    print(f"Listening on port {args.port}, waiting for ESP32(s)...")
+    print(f"Settings: {args.width}x{args.height} @ {args.fps}fps, compression={args.compression}")
 
-    # Wait for at least one client before starting
     while not clients:
         time.sleep(0.1)
+
+    frame_interval = 1.0 / args.fps
 
     try:
         frame_count = 0
         t0 = time.monotonic()
 
         while True:
-            for video in videos:
-                print(f"Now playing: {video.name}")
-                for frame in mjpeg_frames(video, args.width, args.height,
-                                          args.fps, args.quality):
+            for i, video in enumerate(videos):
+                print(f"Now playing: {videos[i].name}")
+                next_frame_time = time.monotonic()
+
+                for frame in mjpeg_frames(encoded[i]):
+                    # Pace frames to target FPS
+                    now = time.monotonic()
+                    sleep_time = next_frame_time - now
+                    if sleep_time > 0:
+                        time.sleep(sleep_time)
+                    next_frame_time += frame_interval
+
                     packet = struct.pack("<I", len(frame)) + frame
                     dead = []
 
@@ -157,6 +202,7 @@ def main():
                             n = len(clients)
                         print(f"  {frame_count} frames sent "
                               f"({frame_count/elapsed:.1f} fps avg, "
+                              f"{len(frame)/1024:.0f}KB last frame, "
                               f"{n} client(s))")
     except KeyboardInterrupt:
         print("\nStopping...")

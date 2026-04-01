@@ -18,3 +18,5 @@ __attribute__((weak)) uint16_t board_lcd_pack_rgb(uint8_t r, uint8_t g, uint8_t 
 __attribute__((weak)) uint16_t board_lcd_get_pixel_raw(int x, int y) { (void)x; (void)y; return 0; }
 __attribute__((weak)) void board_lcd_unpack_rgb(uint16_t color, uint8_t *r, uint8_t *g, uint8_t *b) { (void)color; if (r) *r = 0; if (g) *g = 0; if (b) *b = 0; }
 __attribute__((weak)) uint16_t *board_lcd_framebuffer(void) { return NULL; }
+__attribute__((weak)) uint8_t *board_lcd_framebuffer_rgb888(void) { return NULL; }
+__attribute__((weak)) int board_lcd_fb_height(void) { return 0; }
