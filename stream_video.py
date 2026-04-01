@@ -1,30 +1,45 @@
 #!/usr/bin/env python3
 """
-Stream a video file as MJPEG over TCP to an ESP32 display.
+Broadcast video files as MJPEG over TCP to one or more ESP32 displays.
 
 Usage:
-    python stream_video.py <video_file> [--port 5000] [--width 320] [--height 240] [--fps 15] [--quality 80]
+    python stream_video.py [video_dir] [--port 5000] [--width 320] [--height 240] [--fps 15] [--quality 80]
+
+Plays all video files found in the given directory (default: ./videos),
+cycling through them in alphabetical order and looping forever.
+All connected clients receive the same frames simultaneously.
 
 Each frame is sent as: 4-byte little-endian length + JPEG data.
-The video loops when it reaches the end.
 
 Requires: ffmpeg (command-line tool).
 """
 
 import argparse
+import pathlib
 import socket
 import struct
 import subprocess
 import sys
+import threading
 import time
+
+VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".mov", ".webm", ".flv", ".wmv", ".m4v"}
+
+
+def find_videos(directory):
+    """Return sorted list of video files in directory."""
+    videos = sorted(
+        p for p in pathlib.Path(directory).iterdir()
+        if p.is_file() and p.suffix.lower() in VIDEO_EXTS
+    )
+    return videos
 
 
 def mjpeg_frames(path, width, height, fps, quality):
     """Yield individual JPEG frames from a video file using ffmpeg."""
     cmd = [
         "ffmpeg",
-        "-stream_loop", "-1",
-        "-i", path,
+        "-i", str(path),
         "-vf", f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
                f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2",
         "-r", str(fps),
@@ -62,8 +77,9 @@ def mjpeg_frames(path, width, height, fps, quality):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Stream MJPEG to ESP32 display")
-    parser.add_argument("video", help="Path to video file")
+    parser = argparse.ArgumentParser(description="Broadcast MJPEG to ESP32 displays")
+    parser.add_argument("video_dir", nargs="?", default="videos",
+                        help="Directory of video files (default: ./videos)")
     parser.add_argument("--port", type=int, default=5000, help="TCP port (default: 5000)")
     parser.add_argument("--width", type=int, default=320, help="Display width (default: 320)")
     parser.add_argument("--height", type=int, default=240, help="Display height (default: 240)")
@@ -72,50 +88,83 @@ def main():
                         help="JPEG quality 2-31, lower=better (default: 10)")
     args = parser.parse_args()
 
+    videos = find_videos(args.video_dir)
+    if not videos:
+        print(f"No video files found in {args.video_dir}/")
+        sys.exit(1)
+
+    print(f"Found {len(videos)} video(s) in {args.video_dir}/:")
+    for v in videos:
+        print(f"  {v.name}")
+
+    # Thread-safe set of connected clients
+    clients = {}  # conn -> addr
+    clients_lock = threading.Lock()
+
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind(("0.0.0.0", args.port))
-    srv.listen(1)
+    srv.listen(5)
 
-    print(f"Listening on port {args.port}, waiting for ESP32...")
-    print(f"Will stream: {args.video} at {args.width}x{args.height} @ {args.fps}fps, quality={args.quality}")
+    def accept_loop():
+        while True:
+            conn, addr = srv.accept()
+            conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            conn.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 64 * 1024)
+            conn.settimeout(2.0)
+            with clients_lock:
+                clients[conn] = addr
+            print(f"Client connected: {addr} ({len(clients)} total)")
 
-    while True:
-        conn, addr = srv.accept()
-        print(f"Client connected: {addr}")
-        conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    acceptor = threading.Thread(target=accept_loop, daemon=True)
+    acceptor.start()
 
-        # Increase send buffer
-        conn.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 64 * 1024)
+    print(f"\nListening on port {args.port}, waiting for ESP32(s)...")
+    print(f"Settings: {args.width}x{args.height} @ {args.fps}fps, quality={args.quality}")
 
-        try:
-            frame_count = 0
-            total_bytes = 0
-            t0 = time.monotonic()
+    # Wait for at least one client before starting
+    while not clients:
+        time.sleep(0.1)
 
-            for frame in mjpeg_frames(args.video, args.width, args.height,
-                                      args.fps, args.quality):
-                try:
-                    # Send 4-byte little-endian length + JPEG data
-                    header = struct.pack("<I", len(frame))
-                    conn.sendall(header + frame)
-                except (BrokenPipeError, ConnectionResetError):
-                    print("Client disconnected")
-                    break
+    try:
+        frame_count = 0
+        t0 = time.monotonic()
 
-                frame_count += 1
-                total_bytes += len(frame)
-                if frame_count % 30 == 0:
-                    elapsed = time.monotonic() - t0
-                    avg_size = total_bytes / frame_count / 1024
-                    print(f"  Sent {frame_count} frames "
-                          f"({frame_count/elapsed:.1f} fps avg, "
-                          f"{avg_size:.1f} KB/frame avg)")
-        except KeyboardInterrupt:
-            print("\nStopping...")
-            break
-        finally:
-            conn.close()
+        while True:
+            for video in videos:
+                print(f"Now playing: {video.name}")
+                for frame in mjpeg_frames(video, args.width, args.height,
+                                          args.fps, args.quality):
+                    packet = struct.pack("<I", len(frame)) + frame
+                    dead = []
+
+                    with clients_lock:
+                        for conn, addr in clients.items():
+                            try:
+                                conn.sendall(packet)
+                            except (BrokenPipeError, ConnectionResetError, OSError, socket.timeout):
+                                dead.append(conn)
+
+                        for conn in dead:
+                            addr = clients.pop(conn)
+                            conn.close()
+                            print(f"Client disconnected: {addr} ({len(clients)} remaining)")
+
+                    frame_count += 1
+                    if frame_count % 30 == 0:
+                        elapsed = time.monotonic() - t0
+                        with clients_lock:
+                            n = len(clients)
+                        print(f"  {frame_count} frames sent "
+                              f"({frame_count/elapsed:.1f} fps avg, "
+                              f"{n} client(s))")
+    except KeyboardInterrupt:
+        print("\nStopping...")
+    finally:
+        with clients_lock:
+            for conn in clients:
+                conn.close()
+        srv.close()
 
 
 if __name__ == "__main__":

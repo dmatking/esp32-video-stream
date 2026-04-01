@@ -7,9 +7,9 @@ dependencies.lock
 # IDF managed components cache
 managed_components/
 
-# Video files (except demo clip)
+# Video files
+videos/
 *.mp4
-!demo.mp4
 *.mkv
 *.avi
 *.webm
@@ -18,6 +18,9 @@ managed_components/
 __pycache__/
 *.pyc
 .venv/
+
+# Runtime
+nohup.out
 
 # IDE
 .vscode/
