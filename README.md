@@ -25,7 +25,9 @@ Requires `ffmpeg` installed. Place video files in a `videos/` directory.
 python stream_video.py videos [--port 5000] [--width 320] [--height 240] [--fps 30] [--compression 10]
 ```
 
-The `--compression` flag maps to ffmpeg's `-q:v` (2-31, lower means better quality). Videos are pre-encoded to MJPEG AVI on first run and cached in `videos/.cache/`.
+The `--compression` flag maps to ffmpeg's `-q:v` (2-31, lower means better quality). Videos are pre-encoded to MJPEG AVI on first run and cached in `videos/.cache/`. All videos in the directory are played in a loop as a playlist.
+
+The server supports multiple simultaneous clients — connect several ESP32 boards and they all receive the same stream.
 
 For the P4 board:
 ```
